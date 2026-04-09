@@ -38,6 +38,7 @@ import dbsqlcli.packages.special as special
 from dbsqlcli.sqlexecute import SQLExecute
 from dbsqlcli.completer import DBSQLCompleter
 from dbsqlcli.completion_refresher import CompletionRefresher
+from dbsqlcli import completion_cache
 from dbsqlcli.packages.tabular_output import sql_format
 from dbsqlcli.clistyle import style_factory, style_factory_output
 from dbsqlcli.packages.prompt_utils import confirm, confirm_destructive_query
@@ -139,6 +140,9 @@ For more details about the error, you can check the log file: %s""" % (
         self.completer = DBSQLCompleter()
         self._completer_lock = threading.Lock()
         self.completion_refresher = CompletionRefresher()
+
+        # Load cached completions so they're available immediately
+        completion_cache.load(self.completer, self.sqlexecute.hostname)
 
         self.prompt_app = None
 
@@ -520,9 +524,9 @@ For more details about the error, you can check the log file: %s""" % (
         click.secho(s, **kwargs)
 
     def refresh_completions(self):
-        with self._completer_lock:
-            self.completer.reset_completions()
-
+        # Don't reset the active completer here — it may hold cached data
+        # from a previous session.  The background thread builds a fresh
+        # completer and swaps it in when done.
         completer_options = {
             "smart_completion": True,
             "supported_formats": self.formatter.supported_formats,
@@ -536,6 +540,9 @@ For more details about the error, you can check the log file: %s""" % (
         """Swap the completer object in cli with the newly created completer."""
         with self._completer_lock:
             self.completer = new_completer
+
+        # Persist to disk so next startup has instant completions
+        completion_cache.save(new_completer, self.sqlexecute.hostname)
 
         if self.prompt_app:
             # After refreshing, redraw the CLI to clear the statusbar

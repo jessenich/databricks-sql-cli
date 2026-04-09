@@ -19,7 +19,13 @@ def test_ctor(refresher):
     """
     assert len(refresher.refreshers) > 0
     actual_handlers = list(refresher.refreshers.keys())
-    expected_handlers = ["databases", "schemata", "tables", "special_commands"]
+    expected_handlers = [
+        "catalogs",
+        "databases",
+        "schemata",
+        "tables",
+        "special_commands",
+    ]
     assert expected_handlers == actual_handlers
 
 

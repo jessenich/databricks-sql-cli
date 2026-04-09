@@ -156,35 +156,52 @@ class SQLExecute(object):
             status = format_status(rows_length=None, cursor=cursor)
         return (title, rows, headers, status)
 
+    def _fetch_table_metadata(self, schema=None):
+        """Fetch all relations and split into (tables, views) lists.
+        :param schema: schema to query, defaults to self.database
+        """
+        TABLE_NAME = 2
+        TABLE_TYPE = 3
+        schema = schema or self.database
+        with self.conn.cursor() as cur:
+            data = cur.tables(schema_name=schema).fetchall()
+        tables = [row[TABLE_NAME] for row in data if row[TABLE_TYPE] != "VIEW"]
+        views = [row[TABLE_NAME] for row in data if row[TABLE_TYPE] == "VIEW"]
+        return tables, views
+
     def tables(self):
         """Yields table names."""
-
-        TABLE_NAME = 2
-        with self.conn.cursor() as cur:
-            data = cur.tables(schema_name=self.database).fetchall()
-            _tables = [i[TABLE_NAME] for i in data]
-
-        for row in _tables:
+        tables, _ = self._fetch_table_metadata()
+        for row in tables:
             yield (row,)
 
-    def table_columns(self, tables):
-        """Yields column names."""
+    def views(self):
+        """Yields view names."""
+        _, views = self._fetch_table_metadata()
+        for row in views:
+            yield (row,)
 
+    def table_columns(self, tables, schema=None):
+        """Yields column names.
+        :param tables: iterable of table names to fetch columns for
+        :param schema: schema to query, defaults to self.database
+        """
         TABLE_NAME = 2
         COLUMN_NAME = 3
+        schema = schema or self.database
 
         _all_tables = [i for i in self.tables()]
 
         with self.conn.cursor() as cur:
             if len(_all_tables) < 100:
-                data = cur.columns(schema_name=self.database).fetchall()
+                data = cur.columns(schema_name=schema).fetchall()
                 _columns = [(i[TABLE_NAME], i[COLUMN_NAME]) for i in data]
             else:
                 _columns = []
                 for table in tables:
                     try:
                         data = cur.columns(
-                            schema_name=self.database, table_name=table
+                            schema_name=schema, table_name=table
                         ).fetchall()
                         _transformed = [(i[TABLE_NAME], i[COLUMN_NAME]) for i in data]
                         _columns.extend(_transformed)
@@ -194,6 +211,77 @@ class SQLExecute(object):
         for row in _columns:
             if row[0] in tables:
                 yield row[0], row[1]
+
+    def current_catalog(self):
+        """Return the name of the currently active catalog."""
+        with self.conn.cursor() as cur:
+            cur.execute("SELECT current_catalog()")
+            row = cur.fetchone()
+            return row[0] if row else ""
+
+    def catalogs(self):
+        with self.conn.cursor() as cur:
+            return [row[0] for row in cur.catalogs().fetchall()]
+
+    def catalog_schema_map(self):
+        """Return {catalog: [schema, ...]} for all accessible catalogs/schemas.
+
+        Uses a single query against information_schema instead of one
+        round-trip per catalog.
+        """
+        result = {}
+        try:
+            with self.conn.cursor() as cur:
+                cur.execute(
+                    "SELECT catalog_name, schema_name "
+                    "FROM system.information_schema.schemata "
+                    "ORDER BY catalog_name, schema_name"
+                )
+                for row in cur.fetchall():
+                    result.setdefault(row[0], []).append(row[1])
+        except Exception:
+            logger.debug(
+                "information_schema query failed, "
+                "falling back to per-catalog schema fetch"
+            )
+            # Fall back to one call per catalog
+            for catalog in self.catalogs():
+                try:
+                    result[catalog] = self._schemas_in_catalog(catalog)
+                except Exception:
+                    logger.debug("Error fetching schemas for catalog %s", catalog)
+        return result
+
+    def catalog_table_map(self):
+        """Return {(catalog, schema): [(table_name, table_type), ...]} for all tables.
+
+        Uses a single query against information_schema instead of one
+        round-trip per schema.  table_type is 'TABLE' or 'VIEW'.
+        """
+        result = {}
+        try:
+            with self.conn.cursor() as cur:
+                cur.execute(
+                    "SELECT table_catalog, table_schema, table_name, table_type "
+                    "FROM system.information_schema.tables "
+                    "ORDER BY table_catalog, table_schema, table_name"
+                )
+                for row in cur.fetchall():
+                    key = (row[0], row[1])
+                    result.setdefault(key, []).append((row[2], row[3]))
+        except Exception:
+            logger.debug(
+                "information_schema.tables query failed, "
+                "falling back to active-schema-only table fetch"
+            )
+        return result
+
+    def _schemas_in_catalog(self, catalog):
+        """Return schema names within a specific catalog."""
+        SCHEMA_NAME = 0
+        with self.conn.cursor() as cur:
+            data = cur.schemas(catalog_name=catalog).fetchall()
+            return [row[SCHEMA_NAME] for row in data]
 
     def databases(self):
         with self.conn.cursor() as cur:
