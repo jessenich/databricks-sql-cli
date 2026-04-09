@@ -9,7 +9,7 @@ import itertools
 import sqlparse
 import traceback
 from time import time
-from datetime import datetime
+from datetime import datetime, date, time as dt_time
 from random import choice
 from collections import namedtuple
 import shutil
@@ -72,6 +72,17 @@ def apply_credentials_from_cfg(hostname, http_path, access_token, auth_type, cfg
     auth_type = auth_type or cfg.get("credentials", {}).get("auth_type")
 
     return hostname, http_path, access_token, auth_type
+
+
+def _json_safe_preprocessor(data, headers, **_):
+    converted = [
+        tuple(
+            v.isoformat() if isinstance(v, (datetime, date, dt_time)) else v
+            for v in row
+        )
+        for row in data
+    ]
+    return converted, headers
 
 
 class DBSQLCli(object):
@@ -442,10 +453,15 @@ For more details about the error, you can check the log file: %s""" % (
         expanded = expanded or self.formatter.format_name == "vertical"
         output = []
 
+        if self.formatter.format_name in ("jsonl", "jsonl_escaped"):
+            preprocessors_list = (_json_safe_preprocessor,)
+        else:
+            preprocessors_list = (preprocessors.align_decimals,)
+
         output_kwargs = {
             "disable_numparse": True,
             "preserve_whitespace": True,
-            "preprocessors": (preprocessors.align_decimals,),
+            "preprocessors": preprocessors_list,
             "style": self.output_style,
         }
 
