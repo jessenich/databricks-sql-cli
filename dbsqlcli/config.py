@@ -7,12 +7,6 @@ from configobj import ConfigObj, ConfigObjError
 from collections import defaultdict
 
 
-try:
-    basestring
-except NameError:
-    basestring = str
-
-
 LOGGER = logging.getLogger(__name__)
 
 
@@ -28,7 +22,7 @@ def log(logger, level, message):
 def read_config_file(f):
     """Read a config file."""
 
-    if isinstance(f, basestring):
+    if isinstance(f, str):
         f = os.path.expanduser(f)
 
     try:

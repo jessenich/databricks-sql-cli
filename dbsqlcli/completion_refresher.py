@@ -40,8 +40,8 @@ class CompletionRefresher(object):
                 target=self._bg_refresh,
                 args=(executor, callbacks, completer_options),
                 name="completion_refresh",
+                daemon=True,
             )
-            self._completer_thread.setDaemon(True)
             self._completer_thread.start()
             return [
                 (None, None, None, "Auto-completion refresh started in the background.")

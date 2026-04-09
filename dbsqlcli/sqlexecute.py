@@ -64,7 +64,7 @@ class SQLExecute(object):
             http_path=self.http_path,
             access_token=self.access_token,
             schema=database,
-            _user_agent_entry=USER_AGENT_STRING,
+            user_agent_entry=USER_AGENT_STRING,
             **oauth_params,
         )
 

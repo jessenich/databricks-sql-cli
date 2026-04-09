@@ -4,7 +4,6 @@ import locale
 import logging
 import subprocess
 import shlex
-from io import open
 from time import sleep
 
 import click
@@ -148,7 +147,7 @@ def get_editor_query(sql):
     # The reason we can't simply do .strip('\e') is that it strips characters,
     # not a substring. So it'll strip "e" in the end of the sql also!
     # Ex: "select * from style\e" -> "select * from styl".
-    pattern = re.compile("(^\\\e|\\\e$)")
+    pattern = re.compile(r"(^\\e|\\e$)")
     while pattern.search(sql):
         sql = pattern.sub("", sql)
 
@@ -260,7 +259,7 @@ def subst_favorite_query_args(query, args):
 
         query = query.replace(subst_var, val)
 
-    match = re.search("\\$\d+", query)
+    match = re.search(r"\$\d+", query)
     if match:
         return [
             None,
@@ -357,7 +356,7 @@ def execute_system_command(arg, **_):
 
         # Python 3 returns bytes. This needs to be decoded to a string.
         if isinstance(response, bytes):
-            encoding = locale.getpreferredencoding(False)
+            encoding = locale.getencoding()
             response = response.decode(encoding)
 
         return [(None, None, None, response)]
@@ -509,7 +508,7 @@ def watch_query(arg, **kwargs):
             # Somewhere in the code the pager its activated after every yield,
             # so we disable it in every iteration
             set_pager_enabled(False)
-            for (sql, title) in sql_list:
+            for sql, title in sql_list:
                 cur.execute(sql)
                 if cur.description:
                     headers = [x[0] for x in cur.description]

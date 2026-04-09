@@ -8,27 +8,24 @@ readme = "README.md"
 license = "proprietary"
 
 [tool.poetry.dependencies]
-python = ">=3.7.1,<4.0"
-Pygments = "^2.11.2"
-prompt-toolkit = "^3.0.29"
-sqlparse = "^0.4.2"
-configobj = "^5.0.6"
-cli-helpers = "^2.2.1"
-databricks-sql-connector = "2.5.2"
+python = ">=3.11,<4.0"
+Pygments = "^2.17.0"
+prompt-toolkit = "^3.0.36"
+sqlparse = "^0.5.0"
+configobj = "^5.0.8"
+cli-helpers = "^2.3.0"
+databricks-sql-connector = {version = "^4.2.5", extras = ["pyarrow"]}
 click = "^8.1.2"
-pandas = "1.3.4"
-numpy = [
-    {version = "1.21.1", python = ">=3.7,<3.8"},
-    {version = "1.23.4", python = ">=3.8"}
-]
+pandas = "^2.2.0"
+numpy = "^2.0.0"
 
 [tool.poetry.scripts]
 dbsqlcli = "dbsqlcli.main:cli"
 databricks-sql-cli = "dbsqlcli.main:cli"
 
 [tool.poetry.dev-dependencies]
-pytest = "^7.1.2"
-black = "^22.3.0"
+pytest = "^8.0.0"
+black = "^24.0.0"
 
 [build-system]
 requires = ["poetry-core>=1.0.0"]

@@ -37,12 +37,12 @@ class DBSQLCompleter(Completer):
     def __init__(
         self, smart_completion=True, supported_formats=(), keyword_casing="auto"
     ):
-        super(self.__class__, self).__init__()
+        super().__init__()
         self.smart_completion = smart_completion
         self.reserved_words = set()
         for x in self.keywords:
             self.reserved_words.update(x.split())
-        self.name_pattern = compile("^[_a-z][_a-z0-9\$]*$")
+        self.name_pattern = compile(r"^[_a-z][_a-z0-9\$]*$")
 
         self.special_commands = []
         self.table_formats = supported_formats

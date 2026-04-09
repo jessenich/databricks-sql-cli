@@ -1,3 +1,28 @@
+# Fork Notice
+
+This is a maintained fork of the [original databricks-sql-cli](https://github.com/databricks/databricks-sql-cli), which is no longer actively maintained. The original project does not support Python 3.12 or later due to outdated dependency pins and deprecated API usage.
+
+This fork updates the project to support **Python 3.11 through 3.14**, including:
+
+- Upgraded `databricks-sql-connector` from 2.5.2 to 4.x
+- Updated all dependencies to modern, maintained versions
+- Fixed deprecated Python APIs (`threading.setDaemon`, invalid escape sequences, etc.)
+- Updated CI to test across Python 3.11, 3.12, 3.13, and 3.14
+
+### Install from this fork
+
+```bash
+pip install "git+https://github.com/jessenich/databricks-sql-cli.git"
+```
+
+Or from a [release](https://github.com/jessenich/databricks-sql-cli/releases):
+
+```bash
+pip install "databricks-sql-cli @ https://github.com/jessenich/databricks-sql-cli/releases/download/<tag>/databricks_sql_cli-<version>-py3-none-any.whl"
+```
+
+---
+
 # Introduction
 
 Databricks SQL CLI is a command line interface (CLI) for [Databricks SQL](https://databricks.com/product/databricks-sql) that can do auto-completion and syntax highlighting, and is a proud member of the dbcli community.
@@ -8,7 +33,7 @@ Databricks SQL CLI is a command line interface (CLI) for [Databricks SQL](https:
 
 ### Install via `pip`
 
-You'll need Python 3.7 or newer.
+You'll need Python 3.11 or newer.
 
 ```bash
 python3 -m pip install databricks-sql-cli
