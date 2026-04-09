@@ -11,11 +11,24 @@ This fork updates the project to support **Python 3.11 through 3.14**, including
 
 ### Install from this fork
 
+**Using pipx (recommended)** — installs globally and manages its own virtual environment:
+
+```bash
+# Install pipx if you don't have it
+# Linux: sudo apt install pipx
+# Windows: python -m pip install pipx
+# Then: pipx ensurepath (restart your terminal)
+
+pipx install "git+https://github.com/jessenich/databricks-sql-cli.git"
+```
+
+**Using pip:**
+
 ```bash
 pip install "git+https://github.com/jessenich/databricks-sql-cli.git"
 ```
 
-Or from a [release](https://github.com/jessenich/databricks-sql-cli/releases):
+**From a [release](https://github.com/jessenich/databricks-sql-cli/releases):**
 
 ```bash
 pip install "databricks-sql-cli @ https://github.com/jessenich/databricks-sql-cli/releases/download/<tag>/databricks_sql_cli-<version>-py3-none-any.whl"
