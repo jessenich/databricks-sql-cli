@@ -190,10 +190,19 @@ class SQLExecute(object):
         COLUMN_NAME = 3
         schema = schema or self.database
 
-        _all_tables = [i for i in self.tables()]
+        # Build a lookup set that includes both escaped and unescaped names
+        # so we can match JDBC results (unescaped) against dbmetadata keys (escaped)
+        def _unescape(name):
+            if name and len(name) >= 2:
+                for ch in ("`", '"'):
+                    if name.startswith(ch) and name.endswith(ch):
+                        return name[1:-1]
+            return name
+
+        raw_tables = {_unescape(t) for t in tables} | set(tables)
 
         with self.conn.cursor() as cur:
-            if len(_all_tables) < 100:
+            if len(raw_tables) < 100:
                 data = cur.columns(schema_name=schema).fetchall()
                 _columns = [(i[TABLE_NAME], i[COLUMN_NAME]) for i in data]
             else:
@@ -201,7 +210,7 @@ class SQLExecute(object):
                 for table in tables:
                     try:
                         data = cur.columns(
-                            schema_name=schema, table_name=table
+                            schema_name=schema, table_name=_unescape(table)
                         ).fetchall()
                         _transformed = [(i[TABLE_NAME], i[COLUMN_NAME]) for i in data]
                         _columns.extend(_transformed)
@@ -209,7 +218,7 @@ class SQLExecute(object):
                         logger.debug(f"Error fetching columns for {table}: {e}")
 
         for row in _columns:
-            if row[0] in tables:
+            if row[0] in raw_tables:
                 yield row[0], row[1]
 
     def current_catalog(self):
@@ -250,6 +259,30 @@ class SQLExecute(object):
                     result[catalog] = self._schemas_in_catalog(catalog)
                 except Exception:
                     logger.debug("Error fetching schemas for catalog %s", catalog)
+        return result
+
+    def catalog_column_map(self):
+        """Return {(catalog, schema): [(table_name, column_name), ...]} for all columns.
+
+        Uses a single query against information_schema instead of one
+        round-trip per schema.
+        """
+        result = {}
+        try:
+            with self.conn.cursor() as cur:
+                cur.execute(
+                    "SELECT table_catalog, table_schema, table_name, column_name "
+                    "FROM system.information_schema.columns "
+                    "ORDER BY table_catalog, table_schema, table_name, ordinal_position"
+                )
+                for row in cur.fetchall():
+                    key = (row[0], row[1])
+                    result.setdefault(key, []).append((row[2], row[3]))
+        except Exception:
+            logger.debug(
+                "information_schema.columns query failed, "
+                "falling back to active-schema-only column fetch"
+            )
         return result
 
     def catalog_table_map(self):

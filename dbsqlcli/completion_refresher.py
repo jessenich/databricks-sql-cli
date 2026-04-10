@@ -170,8 +170,12 @@ def refresh_tables(completer, executor):
             saved_dbname = completer.dbname
             completer.set_catalog(catalog)
             completer.set_dbname(schema)
-            tables = [e[0] for e in entries if e[1] != "VIEW" and not _UUID_RE.search(e[0])]
-            views = [e[0] for e in entries if e[1] == "VIEW" and not _UUID_RE.search(e[0])]
+            tables = [
+                e[0] for e in entries if e[1] != "VIEW" and not _UUID_RE.search(e[0])
+            ]
+            views = [
+                e[0] for e in entries if e[1] == "VIEW" and not _UUID_RE.search(e[0])
+            ]
             completer.extend_relations(((t,) for t in tables), kind="tables")
             completer.extend_relations(((v,) for v in views), kind="views")
             completer.set_catalog(saved_catalog)
@@ -184,24 +188,54 @@ def refresh_tables(completer, executor):
         completer.extend_relations(((t,) for t in tables), kind="tables")
         completer.extend_relations(((v,) for v in views), kind="views")
 
-    # Load columns for the active schema only (loading all would be too slow)
-    catalog_key = (
-        f"{completer.current_catalog}.{executor.database}"
-        if completer.current_catalog
-        else executor.database
-    )
-    current_tables = completer.dbmetadata["tables"].get(catalog_key, {}).keys()
-    if not current_tables:
-        current_tables = (
-            completer.dbmetadata["tables"].get(executor.database, {}).keys()
-        )
-    completer.extend_columns(executor.table_columns(current_tables), kind="tables")
+    # Load columns for all catalog.schema pairs using a single bulk query.
+    # Falls back to active-schema-only if the bulk query is unavailable.
+    catalog_column_data = executor.catalog_column_map() if catalog_table_data else {}
 
-    current_views = completer.dbmetadata["views"].get(catalog_key, {}).keys()
-    if not current_views:
-        current_views = completer.dbmetadata["views"].get(executor.database, {}).keys()
-    if current_views:
-        completer.extend_columns(executor.table_columns(current_views), kind="views")
+    if catalog_column_data:
+        for (catalog, schema), col_entries in catalog_column_data.items():
+            saved_catalog = completer.current_catalog
+            saved_dbname = completer.dbname
+            completer.set_catalog(catalog)
+            completer.set_dbname(schema)
+
+            catalog_key = f"{catalog}.{schema}" if catalog else schema
+            known_tables = completer.dbmetadata["tables"].get(catalog_key, {})
+            known_views = completer.dbmetadata["views"].get(catalog_key, {})
+
+            table_cols = [(t, c) for t, c in col_entries if t in known_tables]
+            view_cols = [(t, c) for t, c in col_entries if t in known_views]
+
+            if table_cols:
+                completer.extend_columns(iter(table_cols), kind="tables")
+            if view_cols:
+                completer.extend_columns(iter(view_cols), kind="views")
+
+            completer.set_catalog(saved_catalog)
+            completer.set_dbname(saved_dbname)
+    else:
+        # Fallback: fetch columns for the active schema only
+        catalog_key = (
+            f"{completer.current_catalog}.{executor.database}"
+            if completer.current_catalog
+            else executor.database
+        )
+        current_tables = completer.dbmetadata["tables"].get(catalog_key, {}).keys()
+        if not current_tables:
+            current_tables = (
+                completer.dbmetadata["tables"].get(executor.database, {}).keys()
+            )
+        completer.extend_columns(executor.table_columns(current_tables), kind="tables")
+
+        current_views = completer.dbmetadata["views"].get(catalog_key, {}).keys()
+        if not current_views:
+            current_views = (
+                completer.dbmetadata["views"].get(executor.database, {}).keys()
+            )
+        if current_views:
+            completer.extend_columns(
+                executor.table_columns(current_views), kind="views"
+            )
 
 
 @refresher("special_commands")
