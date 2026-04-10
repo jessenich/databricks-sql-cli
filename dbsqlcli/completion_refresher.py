@@ -1,3 +1,4 @@
+import re
 import threading
 from collections import OrderedDict
 
@@ -8,6 +9,13 @@ from dbsqlcli.packages.special.main import COMMANDS
 import logging
 
 LOGGER = logging.getLogger(__name__)
+
+# Matches table names containing a UUID anywhere (e.g. DLT event logs,
+# materialization tables like __materialization_mat_<uuid>_fact_f)
+_UUID_RE = re.compile(
+    r"[0-9a-f]{8}_[0-9a-f]{4}_[0-9a-f]{4}_[0-9a-f]{4}_[0-9a-f]{12}",
+    re.IGNORECASE,
+)
 
 
 class CompletionRefresher(object):
@@ -68,8 +76,11 @@ class CompletionRefresher(object):
             callbacks = [callbacks]
 
         while 1:
-            for refresher in self.refreshers.values():
-                refresher(completer, executor)
+            for name, refresher in self.refreshers.items():
+                try:
+                    refresher(completer, executor)
+                except Exception as e:
+                    LOGGER.debug("Error in refresher %s: %s", name, e)
                 if self._restart_refresh.is_set():
                     self._restart_refresh.clear()
                     break
@@ -81,6 +92,19 @@ class CompletionRefresher(object):
             # Start over the refresh from the beginning if the for loop hit the
             # break statement.
             continue
+
+        # Log diagnostic info about what was loaded
+        LOGGER.debug(
+            "Refresh complete: catalog=%r, dbname=%r, "
+            "catalogs=%d, databases=%d, catalog_schemas=%d, "
+            "metadata_keys=%r",
+            completer.current_catalog,
+            completer.dbname,
+            len(completer.catalogs),
+            len(completer.databases),
+            len(completer.catalog_schemas),
+            list(completer.dbmetadata["tables"].keys()),
+        )
 
         for callback in callbacks:
             callback(completer)
@@ -98,6 +122,24 @@ def refresher(name, refreshers=CompletionRefresher.refreshers):
     return wrapper
 
 
+@refresher("catalogs")
+def refresh_catalogs(completer, executor):
+    # Set the current catalog so metadata keys can be catalog-qualified
+    try:
+        completer.set_catalog(executor.current_catalog())
+    except Exception:
+        LOGGER.debug("Could not determine current catalog")
+
+    # Fetch all catalog→schemas in a single query instead of N round-trips
+    try:
+        csm = executor.catalog_schema_map()
+        completer.extend_catalog_names(list(csm.keys()))
+        for catalog, schemas in csm.items():
+            completer.extend_catalog_schemas(catalog, schemas)
+    except Exception:
+        LOGGER.debug("Could not fetch catalog/schema map")
+
+
 @refresher("databases")
 def refresh_databases(completer, executor):
     completer.extend_database_names(executor.databases())
@@ -105,21 +147,121 @@ def refresh_databases(completer, executor):
 
 @refresher("schemata")
 def refresh_schemata(completer, executor):
-    # schemata will be the name of the current database.
+    # Register schemas with catalog qualification for each known catalog,
+    # so that "catalog.schema." lookups use the correct metadata key.
+    for catalog, schemas in completer.catalog_schemas.items():
+        for schema in schemas:
+            completer.extend_schemata(schema, catalog=catalog)
+
+    # Also register the active schema under the current catalog
     completer.extend_schemata(executor.database)
     completer.set_dbname(executor.database)
 
 
 @refresher("tables")
 def refresh_tables(completer, executor):
-    # extend_relations adds to the list of table names
-    # extend_columns adds to the list of columns
+    # Try to fetch ALL table names across all catalogs in one query.
+    # This populates table/view completions for every catalog.schema combo.
+    catalog_table_data = executor.catalog_table_map()
 
-    completer.extend_relations(executor.tables(), kind="tables")
-    # This fetches the columns added in the previous line
+    if catalog_table_data:
+        for (catalog, schema), entries in catalog_table_data.items():
+            saved_catalog = completer.current_catalog
+            saved_dbname = completer.dbname
+            completer.set_catalog(catalog)
+            completer.set_dbname(schema)
+            tables = [e[0] for e in entries if e[1] != "VIEW"]
+            views = [e[0] for e in entries if e[1] == "VIEW"]
+            completer.extend_relations(((t,) for t in tables), kind="tables")
+            completer.extend_relations(((v,) for v in views), kind="views")
+            completer.set_catalog(saved_catalog)
+            completer.set_dbname(saved_dbname)
+    else:
+        # Fallback: fetch tables/views for the active schema only
+        tables, views = executor._fetch_table_metadata()
+        tables = [t for t in tables if not _UUID_RE.search(t)]
+        views = [v for v in views if not _UUID_RE.search(v)]
+        completer.extend_relations(((t,) for t in tables), kind="tables")
+        completer.extend_relations(((v,) for v in views), kind="views")
 
-    current_tables = completer.dbmetadata["tables"][executor.database].keys()
-    completer.extend_columns(executor.table_columns(current_tables), kind="tables")
+    # Load columns for all catalog.schema pairs using a single bulk query.
+    # Falls back to active-schema-only if the bulk query is unavailable.
+    catalog_column_data = executor.catalog_column_map() if catalog_table_data else {}
+
+    LOGGER.debug(
+        "Column refresh: bulk_tables=%d schemas, bulk_columns=%d schemas",
+        len(catalog_table_data) if catalog_table_data else 0,
+        len(catalog_column_data),
+    )
+
+    if catalog_column_data:
+        for (catalog, schema), col_entries in catalog_column_data.items():
+            catalog_key = f"{catalog}.{schema}" if catalog else schema
+            known_tables = completer.dbmetadata["tables"].get(catalog_key, {})
+            known_views = completer.dbmetadata["views"].get(catalog_key, {})
+
+            # Build raw→escaped lookup so we can match unescaped column-query
+            # names against the backtick-escaped keys in dbmetadata.
+            raw_to_escaped = {}
+            for escaped in known_tables:
+                raw = escaped[1:-1] if escaped.startswith("`") else escaped
+                raw_to_escaped[raw] = escaped
+            raw_to_escaped_views = {}
+            for escaped in known_views:
+                raw = escaped[1:-1] if escaped.startswith("`") else escaped
+                raw_to_escaped_views[raw] = escaped
+
+            matched = 0
+            unmatched = set()
+            for t, c in col_entries:
+                escaped_t = raw_to_escaped.get(t)
+                if escaped_t is not None:
+                    col_name = completer.escape_name(c, '"')
+                    known_tables[escaped_t].append(col_name)
+                    completer.all_completions.add(col_name)
+                    matched += 1
+                    continue
+                escaped_t = raw_to_escaped_views.get(t)
+                if escaped_t is not None:
+                    col_name = completer.escape_name(c, '"')
+                    known_views[escaped_t].append(col_name)
+                    completer.all_completions.add(col_name)
+                    matched += 1
+                else:
+                    unmatched.add(t)
+            if unmatched:
+                LOGGER.debug(
+                    "Column refresh %s: matched=%d, unmatched_tables=%r "
+                    "(known_tables=%r, known_views=%r)",
+                    catalog_key,
+                    matched,
+                    unmatched,
+                    set(known_tables.keys()),
+                    set(known_views.keys()),
+                )
+    else:
+        # Fallback: fetch columns for the active schema only
+        catalog_key = (
+            f"{completer.current_catalog}.{executor.database}"
+            if completer.current_catalog
+            else executor.database
+        )
+        current_tables = completer.dbmetadata["tables"].get(catalog_key, {}).keys()
+        if not current_tables:
+            current_tables = (
+                completer.dbmetadata["tables"].get(executor.database, {}).keys()
+            )
+        completer.extend_columns(executor.table_columns(current_tables), kind="tables")
+
+        current_views = completer.dbmetadata["views"].get(catalog_key, {}).keys()
+        if not current_views:
+            current_views = (
+                completer.dbmetadata["views"].get(executor.database, {}).keys()
+            )
+        if current_views:
+            completer.extend_columns(
+                executor.table_columns(current_views), kind="views"
+            )
 
 
 @refresher("special_commands")

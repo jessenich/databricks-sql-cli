@@ -7,6 +7,7 @@ from prompt_toolkit.completion import Completer, Completion
 
 from .packages.completion_engine import (
     suggest_type,
+    Catalog,
     Column,
     Function,
     Table,
@@ -79,20 +80,33 @@ class DBSQLCompleter(Completer):
     def extend_database_names(self, databases):
         self.databases.extend(databases)
 
+    def extend_catalog_names(self, catalogs):
+        self.catalogs.extend(catalogs)
+
+    def extend_catalog_schemas(self, catalog, schemas):
+        self.catalog_schemas[catalog] = schemas
+
     def extend_keywords(self, additional_keywords):
         self.keywords.extend(additional_keywords)
         self.all_completions.update(additional_keywords)
 
-    def extend_schemata(self, schema):
+    def extend_schemata(self, schema, catalog=None):
         if schema is None:
             return
-        metadata = self.dbmetadata["tables"]
-        metadata[schema] = {}
+        catalog = catalog or self.current_catalog
+        key = f"{catalog}.{schema}" if catalog else schema
 
-        # dbmetadata.values() are the 'tables' and 'functions' dicts
+        # dbmetadata.values() are the 'tables', 'views', and 'functions' dicts
         for metadata in self.dbmetadata.values():
-            metadata[schema] = {}
-        self.all_completions.update(schema)
+            metadata[key] = {}
+
+        # Also register the plain schema key for backward compat
+        if key != schema:
+            for metadata in self.dbmetadata.values():
+                if schema not in metadata:
+                    metadata[schema] = {}
+
+        self.all_completions.add(schema)
 
     def extend_relations(self, data, kind):
         """Extend metadata for tables or views
@@ -109,19 +123,29 @@ class DBSQLCompleter(Completer):
         except Exception:
             data = []
 
-        # dbmetadata['tables'][$schema_name][$table_name] should be a list of
-        # column names. Default to an asterisk
+        # dbmetadata['tables'][$key][$table_name] should be a list of
+        # column names. Default to an asterisk.
+        # Key is "catalog.schema" when catalog is known, else just "schema".
         metadata = self.dbmetadata[kind]
+        catalog_key = (
+            f"{self.current_catalog}.{self.dbname}"
+            if self.current_catalog
+            else self.dbname
+        )
         for relname in data:
             try:
-                metadata[self.dbname][relname[0]] = ["*"]
+                metadata[catalog_key][relname[0]] = ["*"]
             except KeyError:
-                _logger.error(
-                    "%r %r listed in unrecognized schema %r",
-                    kind,
-                    relname[1],
-                    self.dbname,
-                )
+                # Fall back to plain schema key
+                try:
+                    metadata[self.dbname][relname[0]] = ["*"]
+                except KeyError:
+                    _logger.error(
+                        "%r %r listed in unrecognized schema %r",
+                        kind,
+                        relname[0],
+                        self.dbname,
+                    )
             self.all_completions.add(relname[0])
 
     def extend_columns(self, column_data, kind):
@@ -140,8 +164,19 @@ class DBSQLCompleter(Completer):
             column_data = []
 
         metadata = self.dbmetadata[kind]
+        catalog_key = (
+            f"{self.current_catalog}.{self.dbname}"
+            if self.current_catalog
+            else self.dbname
+        )
         for relname, column in column_data:
-            metadata[self.dbname][relname].append(column)
+            try:
+                metadata[catalog_key][relname].append(column)
+            except KeyError:
+                try:
+                    metadata[self.dbname][relname].append(column)
+                except KeyError:
+                    pass
             self.all_completions.add(column)
 
     def extend_functions(self, func_data):
@@ -165,10 +200,28 @@ class DBSQLCompleter(Completer):
     def set_dbname(self, dbname):
         self.dbname = dbname
 
+    def set_catalog(self, catalog):
+        self.current_catalog = catalog
+
     def reset_completions(self):
         self.databases = []
+        self.catalogs = []
+        self.catalog_schemas = {}  # {catalog_name: [schema_names]}
+        self.current_catalog = ""
         self.dbname = ""
         self.dbmetadata = {"tables": {}, "views": {}, "functions": {}}
+        self.show_items = [
+            "DATABASES",
+            "SCHEMAS",
+            "TABLES",
+            "VIEWS",
+            "COLUMNS",
+            "FUNCTIONS",
+            "CATALOGS",
+            "CREATE",
+            "PARTITIONS",
+            "TBLPROPERTIES",
+        ]
         self.all_completions = set(self.keywords + self.functions)
 
     @staticmethod
@@ -278,23 +331,33 @@ class DBSQLCompleter(Completer):
         return user_funcs
 
     def get_table_matches(self, suggestion, word_before_cursor):
-        tables = self.populate_schema_objects(suggestion.schema, "tables")
+        tables = self.populate_schema_objects(
+            suggestion.schema, "tables", catalog=suggestion.catalog
+        )
         return self.find_matches(word_before_cursor, tables)
 
     def get_view_matches(self, suggestion, word_before_cursor):
-        views = self.populate_schema_objects(suggestion.schema, "views")
+        views = self.populate_schema_objects(
+            suggestion.schema, "views", catalog=suggestion.catalog
+        )
         return self.find_matches(word_before_cursor, views)
 
     def get_alias_matches(self, suggestion, word_before_cursor):
         aliases = suggestion.aliases
         return self.find_matches(word_before_cursor, aliases)
 
-    def get_database_matches(self, _, word_before_cursor):
-        return self.find_matches(word_before_cursor, self.databases)
+    def get_database_matches(self, suggestion, word_before_cursor):
+        if suggestion.catalog and suggestion.catalog in self.catalog_schemas:
+            schemas = self.catalog_schemas[suggestion.catalog]
+        else:
+            schemas = self.databases
+        return self.find_matches(word_before_cursor, schemas)
 
     def get_schema_matches(self, _, word_before_cursor):
-        # TODO
-        return set()
+        return self.find_matches(word_before_cursor, self.databases)
+
+    def get_catalog_matches(self, _, word_before_cursor):
+        return self.find_matches(word_before_cursor, self.catalogs)
 
     def get_keyword_matches(self, suggestion, word_before_cursor):
         keywords = self.keywords_tree.keys()
@@ -334,6 +397,7 @@ class DBSQLCompleter(Completer):
         return self.find_matches(word_before_cursor, favoritequeries.list())
 
     suggestion_matchers = {
+        Catalog: get_catalog_matches,
         Column: get_column_matches,
         Function: get_function_matches,
         Table: get_table_matches,
@@ -376,38 +440,57 @@ class DBSQLCompleter(Completer):
             relname = tbl[1]
             escaped_relname = self.escape_name(tbl[1])
 
+            # Build list of keys to try: catalog-qualified first, then plain
+            catalog_key = (
+                f"{self.current_catalog}.{schema}" if self.current_catalog else schema
+            )
+            keys_to_try = [catalog_key, schema] if catalog_key != schema else [schema]
+
             # We don't know if schema.relname is a table or view. Since
             # tables and views cannot share the same name, we can check one
             # at a time
-            try:
-                columns.extend(meta["tables"][schema][relname])
-
-                # Table exists, so don't bother checking for a view
-                continue
-            except KeyError:
+            found = False
+            for key in keys_to_try:
                 try:
-                    columns.extend(meta["tables"][schema][escaped_relname])
-                    # Table exists, so don't bother checking for a view
-                    continue
+                    columns.extend(meta["tables"][key][relname])
+                    found = True
+                    break
                 except KeyError:
-                    pass
+                    try:
+                        columns.extend(meta["tables"][key][escaped_relname])
+                        found = True
+                        break
+                    except KeyError:
+                        pass
 
-            try:
-                columns.extend(meta["views"][schema][relname])
-            except KeyError:
-                pass
+            if not found:
+                for key in keys_to_try:
+                    try:
+                        columns.extend(meta["views"][key][relname])
+                        break
+                    except KeyError:
+                        pass
 
         return columns
 
-    def populate_schema_objects(self, schema, obj_type):
-        """Returns list of tables or functions for a (optional) schema"""
+    def populate_schema_objects(self, schema, obj_type, catalog=None):
+        """Returns list of tables or functions for a (optional) schema.
+        When catalog is specified, uses catalog.schema as the metadata key.
+        """
         metadata = self.dbmetadata[obj_type]
         schema = schema or self.dbname
+        catalog = catalog or self.current_catalog
+
+        # Try catalog-qualified key first, then plain schema
+        key = f"{catalog}.{schema}" if catalog else schema
 
         try:
-            objects = metadata[schema].keys()
+            objects = metadata[key].keys()
         except KeyError:
-            # schema doesn't exist
-            objects = []
+            # Fall back to unqualified schema key
+            try:
+                objects = metadata[schema].keys()
+            except KeyError:
+                objects = []
 
         return objects

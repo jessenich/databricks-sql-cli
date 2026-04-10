@@ -3,10 +3,14 @@ import pytest
 
 from dbsqlcli.packages.completion_engine import (
     suggest_type,
+    Catalog,
     Column,
+    Database,
     Function,
     Alias,
     Keyword,
+    Schema,
+    Show,
     Table,
     View,
 )
@@ -82,3 +86,56 @@ def test_where_suggests_columns_functions(expression):
         Alias(aliases=["tabl"]),
         Keyword(last_token="WHERE"),
     )
+
+
+def test_show_suggests_show_items_and_keywords():
+    suggestions = suggest_type("SHOW ", "SHOW ")
+    types = tuple(type(s) for s in suggestions)
+    assert Show in types
+    assert Keyword in types
+
+
+def test_use_suggests_databases_and_catalogs():
+    suggestions = suggest_type("USE ", "USE ")
+    types = tuple(type(s) for s in suggestions)
+    assert Database in types
+    assert Catalog in types
+
+
+def test_from_suggests_catalogs_only():
+    suggestions = suggest_type("SELECT * FROM ", "SELECT * FROM ")
+    types = tuple(type(s) for s in suggestions)
+    assert Catalog in types
+    assert Schema not in types
+    assert Table not in types
+    assert View not in types
+
+
+def test_from_with_single_qualifier_suggests_schemas_and_tables():
+    suggestions = suggest_type("SELECT * FROM myschema.", "SELECT * FROM myschema.")
+    types = tuple(type(s) for s in suggestions)
+    assert Catalog not in types
+    assert Schema not in types
+    assert Table in types
+    assert View in types
+    # Single qualifier could be a catalog, so Database (schemas) is suggested
+    assert Database in types
+    # The Database suggestion should carry the qualifier as catalog context
+    db_suggestions = [s for s in suggestions if isinstance(s, Database)]
+    assert db_suggestions[0].catalog == "myschema"
+
+
+def test_from_with_two_level_qualifier_suggests_only_tables():
+    suggestions = suggest_type(
+        "SELECT * FROM catalog.schema.", "SELECT * FROM catalog.schema."
+    )
+    types = tuple(type(s) for s in suggestions)
+    assert Table in types
+    assert View in types
+    # Two-level qualifier means catalog.schema is resolved — no more schema suggestions
+    assert Catalog not in types
+    assert Schema not in types
+    assert Database not in types
+    # The schema used for table lookup should be the second part
+    table_suggestions = [s for s in suggestions if isinstance(s, Table)]
+    assert table_suggestions[0].schema == "schema"

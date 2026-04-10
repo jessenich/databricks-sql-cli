@@ -20,10 +20,14 @@ Function.__new__.__defaults__ = (None, None)
 Keyword = namedtuple("Keyword", ["last_token"])
 Keyword.__new__.__defaults__ = (None,)
 
-Table = namedtuple("Table", ["schema"])
-View = namedtuple("View", ["schema"])
+Table = namedtuple("Table", ["schema", "catalog"])
+Table.__new__.__defaults__ = (None, None)
+View = namedtuple("View", ["schema", "catalog"])
+View.__new__.__defaults__ = (None, None)
 Alias = namedtuple("Alias", ["aliases"])
-Database = namedtuple("Database", [])
+Catalog = namedtuple("Catalog", [])
+Database = namedtuple("Database", ["catalog"])
+Database.__new__.__defaults__ = (None,)
 Schema = namedtuple("Schema", [])
 Keyword.__new__.__defaults__ = (None,)
 Show = namedtuple("Show", [])
@@ -252,19 +256,28 @@ def suggest_based_on_last_token(token, text_before_cursor, full_text, identifier
             "partitions",
         )
     ):
-        schema = (identifier and identifier.get_parent_name()) or None
+        parent = (identifier and identifier.get_parent_name()) or None
+        real_name = (identifier and identifier.get_real_name()) or None
 
-        # Suggest tables from either the currently-selected schema or the
-        # public schema if no schema has been specified
-        suggest = [Table(schema=schema)]
-
-        if not schema:
-            # Suggest schemas
-            suggest.insert(0, Schema())
-
-        # Only tables can be TRUNCATED, otherwise suggest views
-        if token_v != "truncate":
-            suggest.append(View(schema=schema))
+        if parent and real_name:
+            # Two-level qualifier (e.g., "catalog.schema.") — parent is the
+            # catalog, real_name is the schema. Suggest tables in that schema.
+            catalog = parent
+            schema = real_name
+            suggest = [Table(schema=schema, catalog=catalog)]
+            if token_v != "truncate":
+                suggest.append(View(schema=schema, catalog=catalog))
+        elif parent:
+            # One-level qualifier with no real_name (e.g., "something.") —
+            # could be a catalog or schema name
+            schema = parent
+            suggest = [Table(schema=schema)]
+            suggest.append(Database(catalog=schema))
+            if token_v != "truncate":
+                suggest.append(View(schema=schema))
+        else:
+            # No qualifier — suggest only catalogs
+            suggest = [Catalog()]
 
         return suggest
 
@@ -312,7 +325,7 @@ def suggest_based_on_last_token(token, text_before_cursor, full_text, identifier
     elif token_v in ("use", "database", "template", "connect"):
         # "\c <db", "use <db>", "DROP DATABASE <db>",
         # "CREATE DATABASE <newdb> WITH TEMPLATE <db>"
-        return (Database(),)
+        return (Database(), Catalog())
     elif token_v == "tableformat":
         return (TableFormat(),)
     elif token_v.endswith(",") or is_operand(token_v) or token_v in ["=", "and", "or"]:
@@ -323,8 +336,10 @@ def suggest_based_on_last_token(token, text_before_cursor, full_text, identifier
             )
         else:
             return tuple()
-    elif token_v in {"alter", "create", "drop", "show"}:
+    elif token_v in {"alter", "create", "drop"}:
         return (Keyword(token_v.upper()),)
+    elif token_v == "show":
+        return (Show(), Keyword(token_v.upper()))
     else:
         return (Keyword(token_v.upper()),)
 
