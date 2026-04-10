@@ -244,6 +244,7 @@ class SQLExecute(object):
                 cur.execute(
                     "SELECT catalog_name, schema_name "
                     "FROM system.information_schema.schemata "
+                    "WHERE schema_name != 'information_schema' "
                     "ORDER BY catalog_name, schema_name"
                 )
                 for row in cur.fetchall():
@@ -273,16 +274,25 @@ class SQLExecute(object):
                 cur.execute(
                     "SELECT table_catalog, table_schema, table_name, column_name "
                     "FROM system.information_schema.columns "
+                    "WHERE table_schema != 'information_schema' "
+                    "AND table_name NOT RLIKE '[0-9a-f]{8}_[0-9a-f]{4}_[0-9a-f]{4}_[0-9a-f]{4}_[0-9a-f]{12}' "
+                    "AND table_name NOT RLIKE '^__(apply_changes_storage|materialization)_' "
                     "ORDER BY table_catalog, table_schema, table_name, ordinal_position"
                 )
                 for row in cur.fetchall():
                     key = (row[0], row[1])
                     result.setdefault(key, []).append((row[2], row[3]))
-        except Exception:
+        except Exception as e:
             logger.debug(
-                "information_schema.columns query failed, "
-                "falling back to active-schema-only column fetch"
+                "information_schema.columns query failed (%s), "
+                "falling back to active-schema-only column fetch",
+                e,
             )
+        logger.debug(
+            "catalog_column_map: %d schemas, %d total columns",
+            len(result),
+            sum(len(v) for v in result.values()),
+        )
         return result
 
     def catalog_table_map(self):
@@ -297,6 +307,9 @@ class SQLExecute(object):
                 cur.execute(
                     "SELECT table_catalog, table_schema, table_name, table_type "
                     "FROM system.information_schema.tables "
+                    "WHERE table_schema != 'information_schema' "
+                    "AND table_name NOT RLIKE '[0-9a-f]{8}_[0-9a-f]{4}_[0-9a-f]{4}_[0-9a-f]{4}_[0-9a-f]{12}' "
+                    "AND table_name NOT RLIKE '^__(apply_changes_storage|materialization)_' "
                     "ORDER BY table_catalog, table_schema, table_name"
                 )
                 for row in cur.fetchall():

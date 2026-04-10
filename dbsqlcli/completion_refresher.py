@@ -170,12 +170,8 @@ def refresh_tables(completer, executor):
             saved_dbname = completer.dbname
             completer.set_catalog(catalog)
             completer.set_dbname(schema)
-            tables = [
-                e[0] for e in entries if e[1] != "VIEW" and not _UUID_RE.search(e[0])
-            ]
-            views = [
-                e[0] for e in entries if e[1] == "VIEW" and not _UUID_RE.search(e[0])
-            ]
+            tables = [e[0] for e in entries if e[1] != "VIEW"]
+            views = [e[0] for e in entries if e[1] == "VIEW"]
             completer.extend_relations(((t,) for t in tables), kind="tables")
             completer.extend_relations(((v,) for v in views), kind="views")
             completer.set_catalog(saved_catalog)
@@ -192,27 +188,57 @@ def refresh_tables(completer, executor):
     # Falls back to active-schema-only if the bulk query is unavailable.
     catalog_column_data = executor.catalog_column_map() if catalog_table_data else {}
 
+    LOGGER.debug(
+        "Column refresh: bulk_tables=%d schemas, bulk_columns=%d schemas",
+        len(catalog_table_data) if catalog_table_data else 0,
+        len(catalog_column_data),
+    )
+
     if catalog_column_data:
         for (catalog, schema), col_entries in catalog_column_data.items():
-            saved_catalog = completer.current_catalog
-            saved_dbname = completer.dbname
-            completer.set_catalog(catalog)
-            completer.set_dbname(schema)
-
             catalog_key = f"{catalog}.{schema}" if catalog else schema
             known_tables = completer.dbmetadata["tables"].get(catalog_key, {})
             known_views = completer.dbmetadata["views"].get(catalog_key, {})
 
-            table_cols = [(t, c) for t, c in col_entries if t in known_tables]
-            view_cols = [(t, c) for t, c in col_entries if t in known_views]
+            # Build raw→escaped lookup so we can match unescaped column-query
+            # names against the backtick-escaped keys in dbmetadata.
+            raw_to_escaped = {}
+            for escaped in known_tables:
+                raw = escaped[1:-1] if escaped.startswith("`") else escaped
+                raw_to_escaped[raw] = escaped
+            raw_to_escaped_views = {}
+            for escaped in known_views:
+                raw = escaped[1:-1] if escaped.startswith("`") else escaped
+                raw_to_escaped_views[raw] = escaped
 
-            if table_cols:
-                completer.extend_columns(iter(table_cols), kind="tables")
-            if view_cols:
-                completer.extend_columns(iter(view_cols), kind="views")
-
-            completer.set_catalog(saved_catalog)
-            completer.set_dbname(saved_dbname)
+            matched = 0
+            unmatched = set()
+            for t, c in col_entries:
+                escaped_t = raw_to_escaped.get(t)
+                if escaped_t is not None:
+                    col_name = completer.escape_name(c, '"')
+                    known_tables[escaped_t].append(col_name)
+                    completer.all_completions.add(col_name)
+                    matched += 1
+                    continue
+                escaped_t = raw_to_escaped_views.get(t)
+                if escaped_t is not None:
+                    col_name = completer.escape_name(c, '"')
+                    known_views[escaped_t].append(col_name)
+                    completer.all_completions.add(col_name)
+                    matched += 1
+                else:
+                    unmatched.add(t)
+            if unmatched:
+                LOGGER.debug(
+                    "Column refresh %s: matched=%d, unmatched_tables=%r "
+                    "(known_tables=%r, known_views=%r)",
+                    catalog_key,
+                    matched,
+                    unmatched,
+                    set(known_tables.keys()),
+                    set(known_views.keys()),
+                )
     else:
         # Fallback: fetch columns for the active schema only
         catalog_key = (
