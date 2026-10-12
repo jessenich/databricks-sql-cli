@@ -34,6 +34,26 @@ pip install "git+https://github.com/jessenich/databricks-sql-cli.git"
 pip install "databricks-sql-cli @ https://github.com/jessenich/databricks-sql-cli/releases/download/<tag>/databricks_sql_cli-<version>-py3-none-any.whl"
 ```
 
+### Docker (one container per workspace)
+
+Copy `.env.example` per workspace (e.g. `prod.env`, `dev.env`). `*.env` is git-ignored.
+
+```bash
+docker build -t dbsqlcli .
+
+# Env file is baked into the container at create time
+docker create -it --name dbsql-prod --env-file prod.env dbsqlcli
+docker create -it --name dbsql-dev  --env-file dev.env  dbsqlcli my_database
+
+# Attach; exiting the REPL stops the container. History persists in the container.
+docker start -ai dbsql-prod
+
+# One-off query against a workspace
+docker run --rm --env-file prod.env dbsqlcli -e "select 1"
+```
+
+Recreate the container after editing its env file. `--oauth` is not supported in the container.
+
 ---
 
 # Introduction

@@ -63,3 +63,5 @@ target/
 .idea/
 
 .claude/settings.local.json
+# Workspace env files (secrets)
+*.env
